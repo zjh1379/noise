@@ -498,16 +498,15 @@ def main(argv):
                 coordinate_list = values[i].split(',')     
                 coordinate_list_as_floats = [] # New list is now a list of coordinates as a float
                 for i in coordinate_list[5:]: # This will exclude the box coordinates and object score
-                    if len(coordinate_list[5:]) >= 9: #This will make sure that the area is at least a three sided polygon. 
+                    if len(coordinate_list[5:]) >= 6: #This will make sure that the area is at least a three sided polygon. 
                         flt = float(i)
                         coordinate_list_as_floats.append(flt)
                     else:
                         continue
 
                 # This conditional statement will make sure that every coordinate list has floats
-                if len(coordinate_list_as_floats) >= 3 :
+                if len(coordinate_list_as_floats) >= 6 :
                     pixel_area = calculate_pixel_area(coordinate_list_as_floats)
-
                 pixel_area_list.append(pixel_area)
 
         # create dict of image_name as keys and pixel area of all the individual ocl areas as values. 
