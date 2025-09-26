@@ -1,4 +1,4 @@
-path: /path/to/dataset
+path: "D:/NEU/Osteoporosis/noise/dataset/"
 # fold-1
 train: [m2, m3, m4, m5]
 val: [m1]
