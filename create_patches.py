@@ -83,6 +83,7 @@ if not os.path.exists( os.path.join(args.out_foldername,"images") ):
 if not os.path.exists( os.path.join(args.out_foldername,"labels") ):
     os.makedirs( os.path.join(args.out_foldername,"labels") )
 
+idx = 0
 for roi_filename in roi_files:
     for img_filename in img_files:
         # find corresponding file for ROI-Image

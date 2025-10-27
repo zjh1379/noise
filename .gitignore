@@ -3,3 +3,9 @@ output/
 img/
 checkpoints/
 task_jz.md
+*.csv
+*.tif
+*.txt
+*.png
+*.jpg
+analysis/
