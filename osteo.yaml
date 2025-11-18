@@ -20,8 +20,8 @@ path: "D:/NEU/Osteoporosis/noise/dataset/"
 #val: [m2]
 
 
-train: [m1,m2,m3,m4,m5]
-val: [h1_cropped,h2_cropped]
+train: [m2,m3,m4,m5]
+val: [validation_mouse]
 
 # Classes
 names:

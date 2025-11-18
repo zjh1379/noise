@@ -164,8 +164,141 @@ def global_nms(boxes, masks, iou_thresh=0.5):
     boxes = boxes[keep_idx]
     masks = [masks[i] for i in keep_idx.tolist()]
     return boxes, masks
+
+def flatten_detection_grid(box_grid, mask_grid):
+    """Flatten 2D patch grids into a single tensor/list pair."""
+    boxes = []
+    masks = []
+    for r in range(1, len(box_grid) - 1):
+        for c in range(1, len(box_grid[r]) - 1):
+            cell_boxes = box_grid[r][c]
+            if torch.is_tensor(cell_boxes) and cell_boxes.numel() > 0:
+                boxes.append(cell_boxes)
+                masks.extend(mask_grid[r][c])
+    if boxes:
+        return torch.cat(boxes), masks
+    return torch.tensor([], device=DEVICE), []
+
+def save_process_stage(img, boxes, masks, patches, save_path, stage_label):
+    """Save a visualization of detections for a specific processing stage."""
+    if not isinstance(img, Image.Image):
+        return
+    canvas = img.copy()
+    draw = ImageDraw.Draw(canvas, 'RGBA')
+    font = ImageFont.load_default()
+    label_text = stage_label if stage_label else ""
+    if label_text:
+        draw.text((10, 10), label_text, font=font, fill="yellow")
+
+    if isinstance(boxes, torch.Tensor) and boxes.numel() > 0:
+        boxes_cpu = boxes.detach().cpu()
+        for i, box in enumerate(boxes_cpu):
+            coords = box[:4].int().tolist()
+            x1 = max(0, coords[0])
+            y1 = max(0, coords[1])
+            x2 = min(canvas.size[0] - 1, coords[2])
+            y2 = min(canvas.size[1] - 1, coords[3])
+            draw.rectangle([(x1, y1), (x2, y2)], outline="red", width=3)
+            draw.text((x1, y1), f"{i+1}", font=font, fill="red")
+
+            if i < len(masks):
+                mask = masks[i]
+                if mask is not None:
+                    polygon = np.array(mask).astype(int).flatten().tolist()
+                    if len(polygon) >= 6:
+                        color = (randint(0,255), randint(0,255), randint(0,255))
+                        draw.polygon(polygon, fill=color+(100,), outline="blue")
+
+    if patches:
+        for patch in patches:
+            draw.rectangle([(patch[0], patch[1]), (patch[2], patch[3])], outline="green", width=1)
+
+    canvas.save(save_path)
+
+def save_patch_predictions(patch_img, results, patch_coords, save_dir, img_root_name, patch_index):
+    """Save each patch crop with raw model predictions."""
+    if not isinstance(patch_img, Image.Image) or not results:
+        return
+    os.makedirs(save_dir, exist_ok=True)
+    canvas = patch_img.copy()
+    draw = ImageDraw.Draw(canvas, 'RGBA')
+    font = ImageFont.load_default()
+    draw.text((10, 10), f"Patch {patch_index} @ ({patch_coords[0]}, {patch_coords[1]})", font=font, fill="yellow")
+    det_counter = 0
+    for det in results:
+        if det.boxes is None or det.boxes.xyxy is None:
+            continue
+        boxes_xyxy = det.boxes.xyxy.detach().cpu().numpy()
+        scores = det.boxes.conf.detach().cpu().numpy() if det.boxes.conf is not None else None
+        masks = det.masks.xy if det.masks is not None and det.masks.xy is not None else []
+        for idx, box in enumerate(boxes_xyxy):
+            det_counter += 1
+            x1, y1, x2, y2 = box.tolist()
+            draw.rectangle([(x1, y1), (x2, y2)], outline="red", width=2)
+            label = f"{det_counter}"
+            if scores is not None and idx < len(scores):
+                label = f"{label}:{scores[idx]:.2f}"
+            draw.text((x1, y1), label, font=font, fill="red")
+            if idx < len(masks):
+                polygon = np.array(masks[idx]).astype(float).flatten().tolist()
+                if len(polygon) >= 6:
+                    color = (randint(0,255), randint(0,255), randint(0,255))
+                    draw.polygon(polygon, fill=color+(80,), outline="blue")
+    filename = f"{img_root_name}_patch_{patch_index:05d}_x{patch_coords[0]}_y{patch_coords[1]}.png"
+    canvas.save(os.path.join(save_dir, filename))
+
+def save_individual_masks(img, boxes, masks, base_dir, img_root_name, stage_tag):
+    """Save an image per mask showing local crop and polygon."""
+    if not isinstance(img, Image.Image):
+        return
+    if not isinstance(boxes, torch.Tensor) or boxes.numel() == 0:
+        return
+    os.makedirs(base_dir, exist_ok=True)
+    stage_dir = os.path.join(base_dir, stage_tag)
+    os.makedirs(stage_dir, exist_ok=True)
+    boxes_cpu = boxes.detach().cpu()
+    width, height = img.size
+    for idx, box in enumerate(boxes_cpu):
+        coords = box[:4].tolist()
+        if len(coords) < 4:
+            continue
+        x1, y1, x2, y2 = [int(v) for v in coords]
+        margin = 15
+        crop_box = (
+            max(0, x1 - margin),
+            max(0, y1 - margin),
+            min(width, x2 + margin),
+            min(height, y2 + margin)
+        )
+        if crop_box[0] >= crop_box[2] or crop_box[1] >= crop_box[3]:
+            continue
+        crop = img.crop(crop_box)
+        draw = ImageDraw.Draw(crop, 'RGBA')
+        font = ImageFont.load_default()
+        draw.rectangle(
+            [(x1 - crop_box[0], y1 - crop_box[1]), (x2 - crop_box[0], y2 - crop_box[1])],
+            outline="red",
+            width=3
+        )
+        score = float(box[4].item()) if box.numel() > 4 else None
+        label_txt = f"{stage_tag} #{idx}"
+        if score is not None:
+            label_txt = f"{label_txt} ({score:.2f})"
+        draw.text((5, 5), label_txt, font=font, fill="yellow")
+        if idx < len(masks):
+            mask = masks[idx]
+            if mask is not None:
+                mask_arr = np.array(mask, dtype=float)
+                if mask_arr.size >= 6:
+                    mask_arr[:,0] -= crop_box[0]
+                    mask_arr[:,1] -= crop_box[1]
+                    polygon = mask_arr.flatten().tolist()
+                    color = (randint(0,255), randint(0,255), randint(0,255))
+                    draw.polygon(polygon, fill=color+(80,), outline="blue")
+        filename = f"{img_root_name}_{stage_tag}_mask_{idx:05d}.png"
+        crop.save(os.path.join(stage_dir, filename))
     
-def inference(model, img, img_filename, size, out_dir):
+def inference(model, img, img_filename, size, out_dir, save_process_viz=False):
     
     empty_tensor = torch.tensor([], device=DEVICE)
     
@@ -183,7 +316,21 @@ def inference(model, img, img_filename, size, out_dir):
     mask_results[-1] += [[], []]
     
     patches = [] # For debugging
+    process_stage_dir = None
+    patch_viz_dir = None
+    mask_viz_dir = None
+    img_root_name = os.path.splitext(img_filename)[0]
+    if save_process_viz:
+        process_root_dir = os.path.join(out_dir, "process_viz")
+        process_img_dir = os.path.join(process_root_dir, img_root_name)
+        process_stage_dir = os.path.join(process_img_dir, "stages")
+        patch_viz_dir = os.path.join(process_img_dir, "patches")
+        mask_viz_dir = os.path.join(process_img_dir, "individual_masks")
+        os.makedirs(process_stage_dir, exist_ok=True)
+        os.makedirs(patch_viz_dir, exist_ok=True)
+        os.makedirs(mask_viz_dir, exist_ok=True)
     
+    patch_counter = 0
     for y0 in range(0, img.size[1], size//2):
         box_results.append([ empty_tensor ])
         mask_results.append([ [] ])
@@ -209,6 +356,16 @@ def inference(model, img, img_filename, size, out_dir):
             
             results = model( img_crop, verbose=False, device=DEVICE )
             img_ind = np.array((xc,yc))
+            patch_counter += 1
+            if save_process_viz:
+                save_patch_predictions(
+                    img_crop,
+                    results,
+                    (x0, y0, x1, y1),
+                    patch_viz_dir,
+                    img_root_name,
+                    patch_counter
+                )
             
             # Scale the predictions back to their proper size
             for r in range(len(results)):
@@ -233,6 +390,13 @@ def inference(model, img, img_filename, size, out_dir):
     
     objects_found = True if box_results else False
     
+    if save_process_viz:
+        raw_boxes, raw_masks = flatten_detection_grid(box_results, mask_results)
+        raw_stage_path = os.path.join(process_stage_dir, f"{img_root_name}_raw.png")
+        save_process_stage(img, raw_boxes, raw_masks, patches, raw_stage_path, "Stage: raw detections")
+        if isinstance(raw_boxes, torch.Tensor) and raw_boxes.numel() > 0:
+            save_individual_masks(img, raw_boxes, raw_masks, mask_viz_dir, img_root_name, "raw")
+
     if objects_found:
     
         new_box_results = []
@@ -261,9 +425,18 @@ def inference(model, img, img_filename, size, out_dir):
             box_results = [0]
             mask_results = new_mask_results
 
+        if save_process_viz and isinstance(box_results, torch.Tensor) and box_results.numel() > 0:
+            local_stage_path = os.path.join(process_stage_dir, f"{img_root_name}_local_nms.png")
+            save_process_stage(img, box_results, mask_results, patches, local_stage_path, "Stage: after local NMS")
+            save_individual_masks(img, box_results, mask_results, mask_viz_dir, img_root_name, "local_nms")
+
     # Optional global NMS across all boxes
     if isinstance(box_results, torch.Tensor) and box_results.numel() > 0 and ENABLE_GLOBAL_NMS:
         box_results, mask_results = global_nms(box_results, mask_results, iou_thresh=GLOBAL_NMS_IOU)
+        if save_process_viz and isinstance(box_results, torch.Tensor) and box_results.numel() > 0:
+            global_stage_path = os.path.join(process_stage_dir, f"{img_root_name}_global_nms.png")
+            save_process_stage(img, box_results, mask_results, patches, global_stage_path, "Stage: after global NMS")
+            save_individual_masks(img, box_results, mask_results, mask_viz_dir, img_root_name, "global_nms")
 
     
     with open("{f}/{id}".format(f=out_dir, id=img_filename[:-4]+".txt"), 'w', newline='') as f:
@@ -488,6 +661,7 @@ def main(argv):
     parser.add_argument("--local_nms_iou", type=float, default=0.6, help="IoU threshold for local IoU-NMS")
     parser.add_argument("--enable_global_nms", type=int, default=0, help="1 to enable a final global NMS")
     parser.add_argument("--global_nms_iou", type=float, default=0.5, help="IoU threshold for global NMS")
+    parser.add_argument("--save_process_viz", type=int, default=0, help="1 to export process visualization images")
     
 
     args = parser.parse_args()
@@ -499,6 +673,7 @@ def main(argv):
     local_nms_iou = float(args.local_nms_iou)
     enable_global_nms = int(args.enable_global_nms)
     global_nms_iou = float(args.global_nms_iou)
+    save_process_viz = int(args.save_process_viz)
 
     if json_parameter != None: # if params file given
        with open(json_parameter) as params_file: # open the params file
@@ -526,6 +701,8 @@ def main(argv):
             enable_global_nms = int(argument)
         if param == "global_nms_iou":
             global_nms_iou = float(argument)
+        if param == "save_process_viz":
+            save_process_viz = int(argument)
 
         if param == "total_well_area_in_pixels":
             well_area_in_pixels = argument 
@@ -558,6 +735,7 @@ def main(argv):
         local_nms_iou = float(args.local_nms_iou)
         enable_global_nms = int(args.enable_global_nms)
         global_nms_iou = float(args.global_nms_iou)
+        save_process_viz = int(args.save_process_viz)
 
     global DEVICE
     DEVICE = torch.device(usr_device)
@@ -585,7 +763,7 @@ def main(argv):
         ENABLE_GLOBAL_NMS = enable_global_nms
         GLOBAL_NMS_IOU = global_nms_iou
 
-        pred = inference(model, img, img_filename, patch_size, out_dir)
+        pred = inference(model, img, img_filename, patch_size, out_dir, save_process_viz=bool(save_process_viz))
 
     
     count_ocls_from_output(img_dir, out_dir)

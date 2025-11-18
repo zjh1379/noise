@@ -1,8 +1,8 @@
 {
     "model_path": "checkpoints/noise_m.pt",
-    "img_foldername": "img/test_global_nms",
-    "out_foldername": "output_noise_m_global_nms/",
-    "ratio": 0.7784,
+    "img_foldername": "img/c07",
+    "out_foldername": "output/c07-mid-process",
+    "ratio": 0.75488,
     "device": "cuda",
     "total_well_area_in_pixels": 0
 }
